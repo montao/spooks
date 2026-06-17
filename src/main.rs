@@ -1,73 +1,109 @@
-extern crate easy_reader;
-extern crate getopts;
-extern crate rand;
+use std::error::Error;
+use std::io::{self, Write};
+use std::{env, process};
 
-use std::env;
-use std::io::{Cursor, Error, Seek, SeekFrom, Write};
-
-use easy_reader::EasyReader;
 use getopts::Options;
+use rand::seq::SliceRandom;
 
-fn spook() -> Result<(), Error> {
-    
-    // Create fake "file"
-    let mut c = Cursor::new(Vec::new());
-    let str42 = include_str!("spook.lines").as_bytes();
+const DEFAULT_WORD_COUNT: usize = 5;
+const SPOOK_LINES: &str = include_str!("spook.lines");
 
-    // Write into the "file" and seek to the beginning
-    c.write_all(str42).unwrap();
-    c.seek(SeekFrom::Start(0)).unwrap();
+fn word_list() -> Vec<&'static str> {
+    SPOOK_LINES
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect()
+}
 
-    let mut reader = EasyReader::new(c)?;
-    let _res = reader.build_index();
+fn random_words<R: rand::Rng + ?Sized>(
+    rng: &mut R,
+    word_count: usize,
+) -> Result<Vec<&'static str>, &'static str> {
+    let words = word_list();
+    if words.is_empty() {
+        return Err("spook word list is empty");
+    }
 
-    // TODO: Parametrize number of words so that you can choose number of words
-    // TODO: Choose format of output (JSON, XML...)
-    print!("{}", reader.random_line()?.unwrap());
-    print!("{}", reader.random_line()?.unwrap());
-    print!("{}", reader.random_line()?.unwrap());
-    print!("{}", reader.random_line()?.unwrap());
-    println!("{}", reader.random_line()?.unwrap());
+    let mut selected = Vec::with_capacity(word_count);
+    for _ in 0..word_count {
+        if let Some(word) = words.choose(rng) {
+            selected.push(*word);
+        }
+    }
+
+    Ok(selected)
+}
+
+fn spook(mut output: impl Write) -> io::Result<()> {
+    let mut rng = rand::thread_rng();
+    let words = random_words(&mut rng, DEFAULT_WORD_COUNT)
+        .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
+
+    writeln!(output, "{}", words.join(" "))?;
     Ok(())
 }
 
-fn print_usage(program: &str, opts: Options) {
+fn print_usage(program: &str, opts: &Options) {
     let brief = format!("Usage: {}", program);
     print!("{}", opts.usage(&brief));
 }
 
 fn print_version() {
-    let brief = format!(
-        "Version: {}",
-        "$Id$"
-            .replace("$Id: ", "")
-            .replace(" $", "")
-    );
-    print!("{}", &brief);
+    println!("Version: {}", env!("CARGO_PKG_VERSION"));
 }
 
-fn main() {
+fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
-    let program = args[0].clone();
+    let program = args.first().map(String::as_str).unwrap_or("spooks");
 
     let mut opts = Options::new();
     opts.optflag("h", "help", "print this help menu");
-    opts.optflag("v", "version", "print the version id");
-    opts.optflag("c", "clean", "print nothing but the objid");
+    opts.optflag("v", "version", "print the version");
 
-    let matches = match opts.parse(&args[1..]) {
-        Ok(m) => m,
-        Err(f) => panic!(f.to_string()),
-    };
+    let matches = opts.parse(&args[1..])?;
 
     if matches.opt_present("h") {
-        print_usage(&program, opts);
-        return;
+        print_usage(program, &opts);
+        return Ok(());
     }
 
     if matches.opt_present("v") {
         print_version();
-        return;
+        return Ok(());
     }
-    let _res = spook();
+
+    spook(io::stdout())?;
+    Ok(())
+}
+
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("spooks: {}", error);
+        process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::{rngs::StdRng, SeedableRng};
+
+    #[test]
+    fn word_list_is_not_empty_or_padded() {
+        let words = word_list();
+
+        assert!(!words.is_empty());
+        assert!(words.iter().all(|word| !word.is_empty()));
+        assert!(words.iter().all(|word| *word == word.trim()));
+    }
+
+    #[test]
+    fn random_words_uses_requested_count() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let words = random_words(&mut rng, DEFAULT_WORD_COUNT).unwrap();
+
+        assert_eq!(DEFAULT_WORD_COUNT, words.len());
+        assert!(words.iter().all(|word| word_list().contains(word)));
+    }
 }
